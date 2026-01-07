@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from typing import TYPE_CHECKING, Any, Callable, Coroutine
 
@@ -332,6 +333,12 @@ class FlowController:
                     return await original_send_envelope(envelope, chat_stream, db_message, show_log)
                 return False
             
+            # 检查是否为命令响应 (特快列车)
+            if controller._is_command_context():
+                if show_log and controller.config.debug_log:
+                    logger.info("⚡ 检测到命令响应，跳过流控直接发送")
+                return await do_send()
+            
             # 入队
             queued_msg = QueuedMessage(
                 envelope=dict(envelope) if hasattr(envelope, 'items') else envelope,  # type: ignore
@@ -398,6 +405,37 @@ class FlowController:
                 
         return False
         
+    def _is_command_context(self) -> bool:
+        """检查当前是否处于命令执行上下文中
+        
+        通过检查调用栈中是否存在 PlusCommand 的实例来判断。
+        """
+        try:
+            # 获取当前栈帧
+            current_frame = inspect.currentframe()
+            frame = current_frame
+            # 限制检查深度，避免性能开销过大
+            depth = 0
+            while frame and depth < 20:
+                # 检查局部变量中的 'self'
+                instance = frame.f_locals.get('self')
+                if instance:
+                    # 检查实例的类是否继承自 PlusCommand
+                    # 为了不引入 PlusCommand 的依赖，我们检查类名或其基类名
+                    for cls in inspect.getmro(instance.__class__):
+                        if cls.__name__ == 'PlusCommand':
+                            return True
+                
+                frame = frame.f_back
+                depth += 1
+            return False
+        except Exception as e:
+            # 任何异常都视为非命令，保证不影响正常流程
+            logger.warning(f"检查命令上下文失败: {e}")
+            return False
+        finally:
+            del frame # 避免循环引用
+
     @property
     def status(self) -> dict:
         """获取流量控制器状态"""
